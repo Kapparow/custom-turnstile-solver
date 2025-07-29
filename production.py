@@ -3,7 +3,11 @@ import secrets
 import asyncio
 import logging
 import sys
+from dotenv import load_dotenv
 from api_solver import create_app
+
+# Load environment variables from .env file
+load_dotenv()
 
 # Generate secure API key if not provided
 
@@ -75,13 +79,7 @@ async def run_production_server():
         server_config.workers = config.workers
         server_config.max_incomplete_streams = config.max_connections
 
-        # Security headers
-        server_config.response_headers = [
-            ("server", "TurnstileAPI"),
-            ("x-content-type-options", "nosniff"),
-            ("x-frame-options", "DENY"),
-            ("x-xss-protection", "1; mode=block")
-        ]
+        # Note: Security headers can be added at reverse proxy level (nginx)
 
         await hypercorn.asyncio.serve(app, server_config)
 

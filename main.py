@@ -44,8 +44,8 @@ logger.addHandler(handler)
 
 async def main():
     """Run the API server with logging."""
-    logger.info("Starting API server on http://localhost:3003")
-    logger.info("API documentation available at http://localhost:3003/")
+    logger.info("Starting API server on http://0.0.0.0:3003")
+    logger.info("API documentation available at http://0.0.0.0:3003/")
 
     try:
         app = create_app(debug=False, headless=True,
