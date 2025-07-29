@@ -3,13 +3,14 @@ import time
 import logging
 from typing import Optional
 from dataclasses import dataclass
-from camoufox.sync_api import Camoufox
+# from camoufox.sync_api import Camoufox
 from patchright.sync_api import sync_playwright
 
 
 @dataclass
 class TurnstileResult:
     turnstile_value: Optional[str]
+    cf_clearance: Optional[str]
     elapsed_time_seconds: float
     status: str
     reason: Optional[str] = None
@@ -71,7 +72,8 @@ class TurnstileSolver:
                     document.getElementById('ip-display').innerText = `Your IP: ${data.ip}`;
                 } catch (error) {
                     console.error('Error fetching IP:', error);
-                    document.getElementById('ip-display').innerText = 'Failed to fetch IP';
+                    document.getElementById(
+                        'ip-display').innerText = 'Failed to fetch IP';
                 }
             }
             window.onload = fetchIP;
@@ -105,36 +107,105 @@ class TurnstileSolver:
         if self.debug:
             logger.debug(f"Navigating to URL: {url_with_slash}")
 
-        turnstile_div = f'<div class="cf-turnstile" data-sitekey="{sitekey}"' + (f' data-action="{action}"' if action else '') + (f' data-cdata="{cdata}"' if cdata else '') + '></div>'
-        page_data = self.HTML_TEMPLATE.replace("<!-- cf turnstile -->", turnstile_div)
+        turnstile_div = f'<div class="cf-turnstile" data-sitekey="{sitekey}"' + (
+            f' data-action="{action}"' if action else '') + (f' data-cdata="{cdata}"' if cdata else '') + '></div>'
+        page_data = self.HTML_TEMPLATE.replace(
+            "<!-- cf turnstile -->", turnstile_div)
 
-        page.route(url_with_slash, lambda route: route.fulfill(body=page_data, status=200))
+        page.route(url_with_slash, lambda route: route.fulfill(
+            body=page_data, status=200))
         page.goto(url_with_slash)
 
         return page
 
-    def _get_turnstile_response(self, page, max_attempts: int = 10) -> Optional[str]:
+    def _get_turnstile_response(self, page, context, max_attempts: int = 10) -> Optional[str]:
         """Attempt to retrieve Turnstile response."""
         for _ in range(max_attempts):
-            if self.debug:
-                logger.debug(f"Attempt {_ + 1}: No Turnstile response yet.")
+            # time.sleep(100)
+            logger.debug(f"Attempt {_ + 1}: No Turnstile response yet.")
 
             try:
-                turnstile_check = page.input_value("[name=cf-turnstile-response]")
-                if turnstile_check == "":
+                turnstile_check = page.input_value(
+                    "[name=cf-turnstile-response]")
+                print('turnstile_check', turnstile_check)
 
+                # Get cookies from the page context, not just context
+                cookies = page.context.cookies()
+                print('cookies', cookies)
+
+                # Also try to get cookies from the page directly
+                page_cookies = page.evaluate("() => document.cookie")
+                print('page_cookies', page_cookies)
+
+                if turnstile_check == "":
                     page.click("//div[@class='cf-turnstile']", timeout=3000)
                     time.sleep(0.5)
                 else:
-                    element = page.query_selector("[name=cf-turnstile-response]")
-                    if element:
-                        turnstile_element = page.query_selector("[name=cf-turnstile-response]")
-                        return turnstile_element.get_attribute("value")
+                    turnstile_element = page.input_value(
+                        "[name=cf-turnstile-response]")  # its value
+
+                    # Try to find cf_clearance cookie
+                    cf_cookie = next(
+                        (c for c in cookies if c["name"] == "cf_clearance"), None)
+                    print("cf_clearance:",
+                          cf_cookie["value"] if cf_cookie else "Not found")
+
+                    # Also check for other common Cloudflare cookies
+                    cf_cookies = [
+                        c for c in cookies if c["name"].startswith("cf_")]
+                    print("All cf_ cookies:", cf_cookies)
+
+                    # Check if any cookies exist at all
+                    if not cookies:
+                        print("No cookies found in context")
+                    else:
+                        print(f"Total cookies found: {len(cookies)}")
+                        for cookie in cookies:
+                            print(
+                                f"Cookie: {cookie['name']} = {cookie['value'][:50]}...")
+
+                    if turnstile_element:
+                        return turnstile_element
                     break
-            except:
+            except Exception as e:
+                print(f"Error in attempt {_ + 1}: {e}")
                 pass
 
         return None
+
+    def _wait_for_cookies(self, page, timeout: int = 30):
+        """Wait for cookies to be set on the page."""
+        start_time = time.time()
+        while time.time() - start_time < timeout:
+            try:
+                cookies = page.context.cookies()
+                if cookies:
+                    print(f"Found {len(cookies)} cookies after waiting")
+                    return cookies
+                time.sleep(0.5)
+            except Exception as e:
+                print(f"Error waiting for cookies: {e}")
+                time.sleep(0.5)
+        print("Timeout waiting for cookies")
+        return []
+
+    def _check_page_info(self, page):
+        """Check current page URL and domain for debugging."""
+        try:
+            current_url = page.url
+            print(f"Current page URL: {current_url}")
+
+            # Get domain from URL
+            from urllib.parse import urlparse
+            parsed_url = urlparse(current_url)
+            domain = parsed_url.netloc
+            print(f"Current domain: {domain}")
+
+            # Check if we're on the expected domain
+            return domain
+        except Exception as e:
+            print(f"Error checking page info: {e}")
+            return None
 
     def solve(self, url: str, sitekey: str, action: str = None, cdata: str = None):
         """
@@ -145,39 +216,61 @@ class TurnstileSolver:
             playwright = sync_playwright().start()
             browser = playwright.chromium.launch(
                 headless=self.headless,
-                args=self.browser_args
+                args=self.browser_args,
             )
+            context = browser.new_context()
 
-        elif self.browser_type == "camoufox":
-            browser = Camoufox(headless=self.headless).start()
+        # elif self.browser_type == "camoufox":
+        #     browser = Camoufox(headless=self.headless).start()
 
         try:
             page = self._setup_page(browser, url, sitekey, action, cdata)
-            turnstile_value = self._get_turnstile_response(page)
+
+            # Check page info for debugging
+            self._check_page_info(page)
+
+            # Wait for the page to load and for cookies to be set
+            page.wait_for_load_state('networkidle', timeout=10000)
+
+            # Wait for cookies to be set
+            cookies = self._wait_for_cookies(page)
+            if cookies:
+                print(f"Initial cookies found: {len(cookies)}")
+
+            turnstile_value = self._get_turnstile_response(page, context)
 
             elapsed_time = round(time.time() - start_time, 3)
 
             if not turnstile_value:
                 result = TurnstileResult(
                     turnstile_value=None,
+                    cf_clearance=None,
                     elapsed_time_seconds=elapsed_time,
                     status="failure",
                     reason="Max attempts reached without token retrieval"
                 )
                 logger.error("Failed to retrieve Turnstile value.")
             else:
+                # Get final cookies after solving
+                final_cookies = page.context.cookies()
+                cf_clearance = next(
+                    (c for c in final_cookies if c["name"] == "cf_clearance"), None)
+
                 result = TurnstileResult(
                     turnstile_value=turnstile_value,
+                    cf_clearance=cf_clearance["value"] if cf_clearance else None,
                     elapsed_time_seconds=elapsed_time,
                     status="success"
                 )
-                logger.success(f"Successfully solved captcha: {turnstile_value[:45]}... in {elapsed_time} seconds")
+                logger.success(
+                    f"Successfully solved captcha: {turnstile_value[:45]}... in {elapsed_time} seconds")
 
         finally:
             browser.close()
 
             if self.debug:
-                logger.debug(f"Elapsed time: {result.elapsed_time_seconds} seconds")
+                logger.debug(
+                    f"Elapsed time: {result.elapsed_time_seconds} seconds")
                 logger.debug("Browser closed. Returning result.")
 
         return result
@@ -188,17 +281,19 @@ def get_turnstile_token(url: str, sitekey: str, action: str = None, cdata: str =
     browser_types = [
         'chromium',
         'chrome',
-        'camoufox',
+        # 'camoufox',
     ]
     if browser_type not in browser_types:
-        logger.error(f"Unknown browser type: {COLORS.get('RED')}{browser_type}{COLORS.get('RESET')} Available browser types: {browser_types}")
-    elif headless is True and useragent is None and "camoufox" not in browser_type:
-        logger.error(f"You must specify a {COLORS.get('YELLOW')}User-Agent{COLORS.get('RESET')} for Turnstile Solver or use {COLORS.get('GREEN')}camoufox{COLORS.get('RESET')} without useragent")
+        logger.error(
+            f"Unknown browser type: {COLORS.get('RED')}{browser_type}{COLORS.get('RESET')} Available browser types: {browser_types}")
+    # elif headless is True and useragent is None and "camoufox" not in browser_type:
+    #     logger.error(f"You must specify a {COLORS.get('YELLOW')}User-Agent{COLORS.get('RESET')} for Turnstile Solver or use {COLORS.get('GREEN')}camoufox{COLORS.get('RESET')} without useragent")
     else:
-        solver = TurnstileSolver(debug=debug, useragent=useragent, headless=headless, browser_type=browser_type)
-        result = solver.solve(url=url, sitekey=sitekey, action=action, cdata=cdata)
+        solver = TurnstileSolver(
+            debug=debug, useragent=useragent, headless=headless, browser_type=browser_type)
+        result = solver.solve(url=url, sitekey=sitekey,
+                              action=action, cdata=cdata)
         return result.__dict__
-
 
 
 if __name__ == "__main__":

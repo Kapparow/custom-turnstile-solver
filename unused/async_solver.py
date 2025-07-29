@@ -4,13 +4,15 @@ import logging
 import asyncio
 from typing import Optional
 from dataclasses import dataclass
-from camoufox.async_api import AsyncCamoufox
+# from camoufox.async_api import AsyncCamoufox
 from patchright.async_api import async_playwright
 
 
 @dataclass
 class TurnstileResult:
     turnstile_value: Optional[str]
+    cf_clearance: Optional[str]
+    user_agent: Optional[str]
     elapsed_time_seconds: float
     status: str
     reason: Optional[str] = None
@@ -103,11 +105,14 @@ class AsyncTurnstileSolver:
 
         url_with_slash = url + "/" if not url.endswith("/") else url
 
-        turnstile_div = f'<div class="cf-turnstile" data-sitekey="{sitekey}"' + (f' data-action="{action}"' if action else '') + (f' data-cdata="{cdata}"' if cdata else '') + '></div>'
-        page_data = self.HTML_TEMPLATE.replace("<!-- cf turnstile -->", turnstile_div)
+        turnstile_div = f'<div class="cf-turnstile" data-sitekey="{sitekey}"' + (
+            f' data-action="{action}"' if action else '') + (f' data-cdata="{cdata}"' if cdata else '') + '></div>'
+        page_data = self.HTML_TEMPLATE.replace(
+            "<!-- cf turnstile -->", turnstile_div)
 
         if self.debug:
-            logger.debug(f"Starting Turnstile solve for URL: {url} with Sitekey: {sitekey}")
+            logger.debug(
+                f"Starting Turnstile solve for URL: {url} with Sitekey: {sitekey}")
 
         await page.route(url_with_slash, lambda route: route.fulfill(body=page_data, status=200))
         await page.goto(url_with_slash)
@@ -122,20 +127,84 @@ class AsyncTurnstileSolver:
 
             try:
                 turnstile_check = await page.input_value("[name=cf-turnstile-response]")
-                if turnstile_check == "":
+                print('turnstile_check', turnstile_check)
 
+                # Get cookies from the page context
+                cookies = await page.context.cookies()
+                print('cookies', cookies)
+
+                # Also try to get cookies from the page directly
+                page_cookies = await page.evaluate("() => document.cookie")
+                print('page_cookies', page_cookies)
+
+                if turnstile_check == "":
                     await page.click("//div[@class='cf-turnstile']", timeout=3000)
                     await asyncio.sleep(0.5)
                 else:
-                    element = await page.query_selector("[name=cf-turnstile-response]")
-                    if element:
-                        turnstile_element = await page.query_selector("[name=cf-turnstile-response]")
-                        return await turnstile_element.get_attribute("value")
+                    turnstile_element = await page.input_value("[name=cf-turnstile-response]")
+
+                    # Try to find cf_clearance cookie
+                    cf_cookie = next(
+                        (c for c in cookies if c["name"] == "cf_clearance"), None)
+                    print("cf_clearance:",
+                          cf_cookie["value"] if cf_cookie else "Not found")
+
+                    # Also check for other common Cloudflare cookies
+                    cf_cookies = [
+                        c for c in cookies if c["name"].startswith("cf_")]
+                    print("All cf_ cookies:", cf_cookies)
+
+                    # Check if any cookies exist at all
+                    if not cookies:
+                        print("No cookies found in context")
+                    else:
+                        print(f"Total cookies found: {len(cookies)}")
+                        for cookie in cookies:
+                            print(
+                                f"Cookie: {cookie['name']} = {cookie['value'][:50]}...")
+
+                    if turnstile_element:
+                        return turnstile_element
                     break
-            except:
+            except Exception as e:
+                print(f"Error in attempt {_ + 1}: {e}")
                 pass
 
         return None
+
+    async def _wait_for_cookies(self, page, timeout: int = 30):
+        """Wait for cookies to be set on the page."""
+        start_time = time.time()
+        while time.time() - start_time < timeout:
+            try:
+                cookies = await page.context.cookies()
+                if cookies:
+                    print(f"Found {len(cookies)} cookies after waiting")
+                    return cookies
+                await asyncio.sleep(0.5)
+            except Exception as e:
+                print(f"Error waiting for cookies: {e}")
+                await asyncio.sleep(0.5)
+        print("Timeout waiting for cookies")
+        return []
+
+    async def _check_page_info(self, page):
+        """Check current page URL and domain for debugging."""
+        try:
+            current_url = page.url
+            print(f"Current page URL: {current_url}")
+
+            # Get domain from URL
+            from urllib.parse import urlparse
+            parsed_url = urlparse(current_url)
+            domain = parsed_url.netloc
+            print(f"Current domain: {domain}")
+
+            # Check if we're on the expected domain
+            return domain
+        except Exception as e:
+            print(f"Error checking page info: {e}")
+            return None
 
     async def solve(self, url: str, sitekey: str, action: str = None, cdata: str = None):
         """
@@ -149,8 +218,8 @@ class AsyncTurnstileSolver:
                 args=self.browser_args
             )
 
-        elif self.browser_type == "camoufox":
-            browser = await AsyncCamoufox(headless=self.headless).start()
+        # elif self.browser_type == "camoufox":
+        #     browser = await AsyncCamoufox(headless=self.headless).start()
 
         try:
             page = await self._setup_page(browser, url, sitekey, action, cdata)
@@ -161,6 +230,8 @@ class AsyncTurnstileSolver:
             if not turnstile_value:
                 result = TurnstileResult(
                     turnstile_value=None,
+                    cf_clearance=None,
+                    user_agent=None,
                     elapsed_time_seconds=elapsed_time,
                     status="failure",
                     reason="Max attempts reached without token retrieval"
@@ -169,10 +240,13 @@ class AsyncTurnstileSolver:
             else:
                 result = TurnstileResult(
                     turnstile_value=turnstile_value,
+                    cf_clearance=None,
+                    user_agent=None,
                     elapsed_time_seconds=elapsed_time,
                     status="success"
                 )
-                logger.success(f"Successfully solved captcha: {turnstile_value[:45]}... in {elapsed_time} seconds")
+                logger.success(
+                    f"Successfully solved captcha: {turnstile_value[:45]}... in {elapsed_time} seconds")
 
         finally:
             await browser.close()
@@ -185,7 +259,8 @@ class AsyncTurnstileSolver:
                     pass
 
             if self.debug:
-                logger.debug(f"Elapsed time: {result.elapsed_time_seconds} seconds")
+                logger.debug(
+                    f"Elapsed time: {result.elapsed_time_seconds} seconds")
                 logger.debug("Browser closed. Returning result.")
 
         return result
@@ -196,15 +271,17 @@ async def get_turnstile_token(url: str, sitekey: str, action: str = None, cdata:
     browser_types = [
         'chromium',
         'chrome',
-        'camoufox',
+        # 'camoufox',
         'msedge'
     ]
     if browser_type not in browser_types:
-        logger.error(f"Unknown browser type: {COLORS.get('RED')}{browser_type}{COLORS.get('RESET')} Available browser types: {browser_types}")
-    elif headless is True and useragent is None and "camoufox" not in browser_type:
-        logger.error(f"You must specify a {COLORS.get('YELLOW')}User-Agent{COLORS.get('RESET')} for Turnstile Solver or use {COLORS.get('GREEN')}camoufox{COLORS.get('RESET')} without useragent")
+        logger.error(
+            f"Unknown browser type: {COLORS.get('RED')}{browser_type}{COLORS.get('RESET')} Available browser types: {browser_types}")
+    # elif headless is True and useragent is None and "camoufox" not in browser_type:
+    #     logger.error(f"You must specify a {COLORS.get('YELLOW')}User-Agent{COLORS.get('RESET')} for Turnstile Solver or use {COLORS.get('GREEN')}camoufox{COLORS.get('RESET')} without useragent")
     else:
-        solver = AsyncTurnstileSolver(debug=debug, useragent=useragent, headless=headless, browser_type=browser_type)
+        solver = AsyncTurnstileSolver(
+            debug=debug, useragent=useragent, headless=headless, browser_type=browser_type)
         result = await solver.solve(url=url, sitekey=sitekey, action=action, cdata=cdata)
         return result.__dict__
 
