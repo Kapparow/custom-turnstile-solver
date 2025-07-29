@@ -212,8 +212,6 @@ class TurnstileAPIServer:
             "password": password
         }
 
-        logger.debug(f"Browser {index}: Using proxy: {parsed_proxy}")
-
         context = await browser.new_context(proxy=parsed_proxy)
 
         page = await context.new_page()
@@ -251,11 +249,7 @@ class TurnstileAPIServer:
                     turnstile_check = await page.input_value("[name=cf-turnstile-response]", timeout=2000)
                     # Get cookies from the page context
                     cookies = await page.context.cookies()
-                    print('cookies', cookies)
 
-                    # Also try to get cookies from the page directly
-                    page_cookies = await page.evaluate("() => document.cookie")
-                    print('page_cookies', page_cookies)
                     if turnstile_check == "":
                         if self.debug:
                             logger.debug(
@@ -268,25 +262,7 @@ class TurnstileAPIServer:
 
                         logger.success(
                             f"Browser {index}: Successfully solved captcha - {COLORS.get('MAGENTA')}{turnstile_check[:10]}{COLORS.get('RESET')} in {COLORS.get('GREEN')}{elapsed_time}{COLORS.get('RESET')} Seconds")
-                        # Try to find cf_clearance cookie
-                        cf_cookie = next(
-                            (c for c in cookies if c["name"] == "cf_clearance"), None)
-                        print("cf_clearance:",
-                              cf_cookie["value"] if cf_cookie else "Not found")
 
-                    # Also check for other common Cloudflare cookies
-                        cf_cookies = [
-                            c for c in cookies if c["name"].startswith("cf_")]
-                        print("All cf_ cookies:", cf_cookies)
-
-                    # Check if any cookies exist at all
-                        if not cookies:
-                            print("No cookies found in context")
-                        else:
-                            print(f"Total cookies found: {len(cookies)}")
-                            for cookie in cookies:
-                                print(
-                                    f"Cookie: {cookie['name']} = {cookie['value'][:50]}...")
                         user_agent = await page.evaluate("navigator.userAgent")
 
                         self.results[task_id] = {
