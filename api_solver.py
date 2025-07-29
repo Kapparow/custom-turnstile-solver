@@ -7,6 +7,7 @@ import random
 import logging
 import asyncio
 import argparse
+from functools import wraps
 from quart import Quart, request, jsonify
 # from camoufox.async_api import AsyncCamoufox
 from patchright.async_api import async_playwright
@@ -82,7 +83,7 @@ class TurnstileAPIServer:
     </html>
     """
 
-    def __init__(self, headless: bool, useragent: str, debug: bool, browser_type: str, thread: int, proxy_support: bool):
+    def __init__(self, headless: bool, useragent: str, debug: bool, browser_type: str, thread: int, proxy_support: bool, api_key: str = None):
         self.app = Quart(__name__)
         self.debug = debug
         self.results = self._load_results()
@@ -91,12 +92,42 @@ class TurnstileAPIServer:
         self.useragent = useragent
         self.thread_count = thread
         self.proxy_support = proxy_support
+        self.api_key = api_key
         self.browser_pool = asyncio.Queue()
         self.browser_args = []
         if useragent:
             self.browser_args.append(f"--user-agent={useragent}")
 
         self._setup_routes()
+
+    def require_api_key(self, f):
+        """Decorator to require API key authentication."""
+        @wraps(f)
+        async def decorated_function(*args, **kwargs):
+            if not self.api_key:
+                # If no API key is configured, allow all requests
+                return await f(*args, **kwargs)
+
+            api_key = request.headers.get('x-api-key')
+
+            if not api_key:
+                logger.warning("Request blocked: Missing x-api-key header")
+                return jsonify({
+                    "status": "error",
+                    "error": "Missing x-api-key header"
+                }), 401
+
+            if api_key != self.api_key:
+                logger.warning(
+                    f"Request blocked: Invalid API key provided: {api_key[:10]}...")
+                return jsonify({
+                    "status": "error",
+                    "error": "Invalid API key"
+                }), 401
+
+            logger.debug("API key validation successful")
+            return await f(*args, **kwargs)
+        return decorated_function
 
     @staticmethod
     def _load_results():
@@ -121,8 +152,10 @@ class TurnstileAPIServer:
     def _setup_routes(self) -> None:
         """Set up the application routes."""
         self.app.before_serving(self._startup)
-        self.app.route('/turnstile', methods=['GET'])(self.process_turnstile)
-        self.app.route('/result', methods=['GET'])(self.get_result)
+        self.app.route(
+            '/turnstile', methods=['GET'])(self.require_api_key(self.process_turnstile))
+        self.app.route('/result', methods=['GET']
+                       )(self.require_api_key(self.get_result))
         self.app.route('/')(self.index)
 
     async def _startup(self) -> None:
@@ -354,6 +387,13 @@ class TurnstileAPIServer:
                         <li><strong>sitekey</strong>: The site key for Turnstile</li>
                     </ul>
 
+                    <div class="bg-yellow-900 border-l-4 border-yellow-600 p-4 mb-6">
+                        <p class="text-yellow-200 font-semibold mb-2">Authentication Required</p>
+                        <p class="text-yellow-200">If API key authentication is enabled, include the 
+                           <code class="bg-yellow-700 text-white px-1 py-0.5 rounded text-sm">x-api-key</code> 
+                           header in your requests.</p>
+                    </div>
+
                     <div class="bg-gray-700 p-4 rounded-lg mb-6 border border-red-500">
                         <p class="font-semibold mb-2 text-red-400">Example usage:</p>
                         <code class="text-sm break-all text-red-300">/turnstile?url=https://example.com&sitekey=sitekey</code>
@@ -388,16 +428,18 @@ def parse_args():
                         help='Set the number of browser threads to use for multi-threaded mode. Increasing this will speed up execution but requires more resources (default: 1)')
     parser.add_argument('--proxy', type=bool, default=False,
                         help='Enable proxy support for the solver (Default: False)')
-    parser.add_argument('--host', type=str, default='127.0.0.1',
-                        help='Specify the IP address where the API solver runs. (Default: 127.0.0.1)')
+    parser.add_argument('--host', type=str, default='0.0.0.0',
+                        help='Specify the IP address where the API solver runs. Use 0.0.0.0 for public access (Default: 0.0.0.0)')
     parser.add_argument('--port', type=str, default='5000',
                         help='Set the port for the API solver to listen on. (Default: 5000)')
+    parser.add_argument('--api-key', type=str, default=None,
+                        help='Set an API key for authentication. If not provided, API key validation is disabled (Default: None)')
     return parser.parse_args()
 
 
-def create_app(headless: bool, useragent: str, debug: bool, browser_type: str, thread: int, proxy_support: bool) -> Quart:
+def create_app(headless: bool, useragent: str, debug: bool, browser_type: str, thread: int, proxy_support: bool, api_key: str = None) -> Quart:
     server = TurnstileAPIServer(headless=headless, useragent=useragent, debug=debug,
-                                browser_type=browser_type, thread=thread, proxy_support=proxy_support)
+                                browser_type=browser_type, thread=thread, proxy_support=proxy_support, api_key=api_key)
     return server.app
 
 
@@ -415,6 +457,16 @@ if __name__ == '__main__':
     # elif args.headless is True and args.useragent is None and "camoufox" not in args.browser_type:
     #     logger.error(f"You must specify a {COLORS.get('YELLOW')}User-Agent{COLORS.get('RESET')} for Turnstile Solver or use {COLORS.get('GREEN')}camoufox{COLORS.get('RESET')} without useragent")
     else:
+        # Access the api_key attribute (argparse converts --api-key to api_key)
+        api_key = getattr(args, 'api_key', None)
+        if api_key:
+            logger.info(
+                f"API key authentication {COLORS.get('GREEN')}enabled{COLORS.get('RESET')}")
+        else:
+            logger.warning(
+                f"API key authentication {COLORS.get('YELLOW')}disabled{COLORS.get('RESET')} - all requests will be allowed")
+
         app = create_app(headless=args.headless, debug=args.debug, useragent=args.useragent,
-                         browser_type=args.browser_type, thread=args.thread, proxy_support=args.proxy)
+                         browser_type=args.browser_type, thread=args.thread, proxy_support=args.proxy,
+                         api_key=api_key)
         app.run(host=args.host, port=int(args.port))

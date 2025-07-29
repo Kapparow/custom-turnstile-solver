@@ -1,0 +1,51 @@
+version: '3.8'
+
+services:
+  turnstile-api:
+    build:
+      context: .
+      dockerfile: Docker/Dockerfile.production
+    ports:
+      - "8000:8000"
+    environment:
+      - TURNSTILE_API_KEY=${TURNSTILE_API_KEY}
+      - HOST=0.0.0.0
+      - PORT=8000
+      - DEBUG=${DEBUG:-false}
+      - HEADLESS=${HEADLESS:-true}
+      - BROWSER_TYPE=${BROWSER_TYPE:-chromium}
+      - THREADS=${THREADS:-2}
+      - USER_AGENT=${USER_AGENT}
+      - WORKERS=${WORKERS:-1}
+      - MAX_CONNECTIONS=${MAX_CONNECTIONS:-100}
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    # Security and resource limits
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - SYS_ADMIN  # Required for Chrome sandbox
+    shm_size: 1g  # Increase shared memory for Chrome
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+          cpus: '1.0'
+        reservations:
+          memory: 512M
+          cpus: '0.25'
+    # Optional: Use with nginx reverse proxy
+    # networks:
+    #   - web
+
+# Optional: Network for reverse proxy setup
+# networks:
+#   web:
+#     external: true 

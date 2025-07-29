@@ -48,11 +48,11 @@ async def main():
     logger.info("API documentation available at http://localhost:3003/")
 
     try:
-        app = create_app(debug=True, headless=False,
-                         useragent=None, browser_type="chromium", thread=4, proxy_support=True)
+        app = create_app(debug=False, headless=True,
+                         useragent=None, browser_type="chromium", thread=4, proxy_support=True, api_key="your-secure-api-key-here")
         import hypercorn.asyncio
         config = hypercorn.Config()
-        config.bind = ["127.0.0.1:3003"]
+        config.bind = ["0.0.0.0:3003"]
         await hypercorn.asyncio.serve(app, config)
     except Exception as e:
         logger.error(f"API server failed to start: {str(e)}")
