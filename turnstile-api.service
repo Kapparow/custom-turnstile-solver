@@ -1,0 +1,39 @@
+[Unit]
+Description=Turnstile API Server
+After=network.target
+Wants=network.target
+
+[Service]
+Type=simple
+User=turnstile
+Group=turnstile
+WorkingDirectory=/opt/turnstile-solver
+Environment=PATH=/opt/turnstile-solver/venv/bin
+EnvironmentFile=/opt/turnstile-solver/.env
+ExecStart=/opt/turnstile-solver/venv/bin/python production.py
+Restart=always
+RestartSec=5
+StartLimitInterval=60s
+StartLimitBurst=3
+
+# Security settings
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/turnstile-solver
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+
+# Resource limits
+LimitNOFILE=65536
+MemoryMax=2G
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=turnstile-api
+
+[Install]
+WantedBy=multi-user.target 
