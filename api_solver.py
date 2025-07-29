@@ -201,6 +201,11 @@ class TurnstileAPIServer:
 
         parsed = urlparse(proxy)
 
+        logger.debug(f"Proxy: {proxy}")
+        logger.debug(f"Parsed: {parsed}")
+        logger.debug(f"url: {url}")
+        logger.debug(f"sitekey: {sitekey}")
+
         username = parsed.username
         password = parsed.password
         ip = parsed.hostname
